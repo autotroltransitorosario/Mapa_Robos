@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AUTOTROL · Mapa de Inspecciones</title>
+  <title>AUTOTROL · Mapa de Robos</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css">
@@ -104,6 +104,31 @@
       background-color:rgba(232,125,43,.82) !important;
       color:#fff !important;font-weight:700 !important;font-size:12px !important}
 
+    /* ── LIGHTBOX ── */
+    #lightbox{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.92);
+      display:none;align-items:center;justify-content:center;
+      backdrop-filter:blur(4px);cursor:zoom-out;animation:lbIn .18s ease}
+    #lightbox.open{display:flex}
+    @keyframes lbIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+    #lbImg{max-width:92vw;max-height:88vh;object-fit:contain;border-radius:6px;
+      box-shadow:0 20px 80px rgba(0,0,0,.9);cursor:default;transition:opacity .2s}
+    #lbImg.loading{opacity:.3}
+    #lbClose{position:absolute;top:16px;right:20px;background:rgba(255,255,255,.12);
+      border:none;color:#fff;font-size:22px;line-height:1;width:36px;height:36px;
+      border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;
+      transition:background .15s}
+    #lbClose:hover{background:rgba(255,255,255,.25)}
+    #lbCaption{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);
+      background:rgba(0,0,0,.6);color:rgba(255,255,255,.8);font-size:12px;
+      padding:5px 14px;border-radius:20px;white-space:nowrap;backdrop-filter:blur(4px)}
+    #lbSpinner{position:absolute;width:36px;height:36px;border:3px solid rgba(255,255,255,.15);
+      border-top-color:var(--orange);border-radius:50%;animation:spin .7s linear infinite;
+      display:none}
+    #lbSpinner.vis{display:block}
+
+    .mp-photo{cursor:zoom-in}
+    .mp-photo:hover{opacity:.88;transition:opacity .15s}
+
     /* Leaflet dark attribution */
     .leaflet-control-attribution{
       background:rgba(15,25,35,.75) !important;color:var(--text-muted) !important;font-size:9px !important}
@@ -146,6 +171,14 @@
   </div>
 </div>
 
+<!-- ── LIGHTBOX ── -->
+<div id="lightbox" onclick="closeLightbox()">
+  <div id="lbSpinner"></div>
+  <img id="lbImg" src="" alt="Foto inspección" onclick="event.stopPropagation()">
+  <button id="lbClose" onclick="closeLightbox()" title="Cerrar">✕</button>
+  <div id="lbCaption"></div>
+</div>
+
 <!-- ── LOADING ── -->
 <div id="loadOverlay">
   <div class="spinner"></div>
@@ -157,8 +190,8 @@
 
 <script>
 /* ── CONFIG ── */
-const SHEET_ID  = '1IRfCwKpKpFoWgPEI36B5nNgN5EOc7ixgmMlVEFbqJLQ';
-const SHEET_GID = '1331561464';
+const SHEET_ID  = '1dmTytcf2ebJsoORgoboK8ja7aaNUaBbMdgl8r3VpRmQ';
+const SHEET_GID = '1646055869';
 const CSV_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
 
 let map, markerLayer;
@@ -172,11 +205,10 @@ function initMap() {
     preferCanvas: true,
   });
 
-  // CartoDB dark tiles – matches the app's dark theme
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 19
+  // Esri Dark Gray Canvas – gratuito, sin API key
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    attribution: '&copy; <a href="https://www.esri.com">Esri</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 16
   }).addTo(map);
 
   markerLayer = L.markerClusterGroup({
@@ -259,9 +291,11 @@ function buildPopup(row, col) {
   const fotoId = col.foto != null ? parseDriveId(row[col.foto]) : null;
   const aClass = accionClass(accion);
 
+  const caption = [calle, altura ? `Altura ${altura}` : ''].filter(Boolean).join(' · ');
   const photo = fotoId
     ? `<img class="mp-photo" src="https://drive.google.com/thumbnail?id=${fotoId}&sz=w248-h148"
-         alt="Foto" loading="lazy"
+         alt="Foto" loading="lazy" title="Clic para ampliar"
+         onclick="openLightbox('${fotoId}','${caption.replace(/'/g,"\\'")}',event)"
          onerror="this.style.display='none';document.getElementById('noph-${fotoId}').style.display='flex'">`
       + `<div id="noph-${fotoId}" class="mp-nophoto" style="display:none">
            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".4">
@@ -394,6 +428,41 @@ function loadData() {
     }
   });
 }
+
+/* ── LIGHTBOX ── */
+function openLightbox(driveId, caption, e) {
+  if (e) e.stopPropagation();
+  const lb  = document.getElementById('lightbox');
+  const img = document.getElementById('lbImg');
+  const sp  = document.getElementById('lbSpinner');
+  const cap = document.getElementById('lbCaption');
+
+  img.src = '';
+  img.classList.add('loading');
+  sp.classList.add('vis');
+  cap.textContent = caption || '';
+  lb.classList.add('open');
+
+  // Try full resolution first, fallback to large thumbnail
+  const fullUrl = `https://drive.google.com/thumbnail?id=${driveId}&sz=w1920-h1440`;
+  img.onload = () => { img.classList.remove('loading'); sp.classList.remove('vis'); };
+  img.onerror = () => {
+    // fallback: view URL
+    img.src = `https://drive.google.com/uc?export=view&id=${driveId}`;
+    img.onerror = () => { img.classList.remove('loading'); sp.classList.remove('vis'); };
+  };
+  img.src = fullUrl;
+}
+
+function closeLightbox() {
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lbImg');
+  lb.classList.remove('open');
+  img.src = ''; // free memory
+}
+
+// Close lightbox with Escape key
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
 
 /* ── BOOT ── */
 initMap();
